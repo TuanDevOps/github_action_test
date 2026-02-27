@@ -1,13 +1,5 @@
 name: Release draft creation
 
-on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version of the release"
-        required: true
-        type: number
-
 jobs:
   release:
     name: Release
