@@ -1,6 +1,12 @@
 name: Build & Deploy Frontend
 
 on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (tag/branch/commit). Example: v1.2.3"
+        required: true
+        default: "v1.0.0"
   push:
     tags:
       - 'v*'
@@ -11,21 +17,7 @@ on:
       - release
       - usertest
       - main
-  workflow_dispatch:
-    inputs:
-      env:
-        description: "Target environment (DEV/STG/UT/PRO)"
-        required: true
-        type: choice
-        options:
-          - DEV
-          - STG
-          - UT
-          - PRO
-      ref:
-        description: "Git ref to deploy (tag/branch/commit). Example: v1.2.3"
-        required: true
-        default: "v1.0.0"
+  
 
 permissions:
   contents: read
