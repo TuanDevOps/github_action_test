@@ -1,61 +1,198 @@
-name: Release draft creation
+name: Build & Deploy Frontend
 
 on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    types: [closed]
+    branches:
+      - dev/v3.0.0
+      - release
+      - usertest
+      - main
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version of the release"
+      env:
+        description: "Target environment (DEV/STG/UT/PRO)"
         required: true
-        type: number
+        type: choice
+        options:
+          - DEV
+          - STG
+          - UT
+          - PRO
+      ref:
+        description: "Git ref to deploy (tag/branch/commit). Example: v1.2.3"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
-  release:
-    name: Release
-
+  build:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
+    # ✅ Run for PR merged OR tag push OR workflow_dispatch
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch')
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # ✅ For manual deploy/rollback: checkout selected ref
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
 
-      - name: Extract changelog for version
+      - name: Set up Node.js version
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: npm install and build
+        working-directory: src
         run: |
-          VERSION=${{ github.event.inputs.version }}
+          npm ci
+          npm run build --if-present
 
-          # Extract changelog for version
-          CHANGELOG=$(awk -v version="$VERSION" 'BEGIN{RS="## "; FS="\n"} $0 ~ version {print "## "$0}' CHANGELOG.md)
+      - name: Copy standalone into the root
+        run: cp -R ./src/.next/standalone ./site-deploy
 
-          # Remove the first line (version title)
-          CHANGELOG=$(echo "$CHANGELOG" | sed '1d')
+      - name: Copy static into the .next folder
+        run: |
+          cp -R ./src/.next/static ./site-deploy/.next/static
+          ls
 
-          # Verify if changelog was found
-          if [ -z "$CHANGELOG" ]; then
-            echo "Changelog for version $VERSION not found"
+      - name: Copy Public folder
+        run: cp -R ./src/public ./site-deploy/public
+
+      - name: Package Next application
+        run: |
+          cd ./site-deploy
+          zip Nextjs-site.zip ./* .next -qr
+
+      - name: Publish Next Application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nextjs-site
+          path: ./site-deploy/Nextjs-site.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    # ✅ Run for PR merged OR tag push OR workflow_dispatch
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Set up Node.js version
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: Nextjs-site
+
+      - name: Select environment (DEV/STG/UT/PRO)
+        id: env
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE="${{ github.event.pull_request.base.ref }}"
+            HEAD="${{ github.event.pull_request.head.ref }}"
+
+            if [[ "$BASE" == "dev/v3.0.0" && "$HEAD" == feature/* ]]; then
+              echo "ENV=DEV" >> $GITHUB_OUTPUT
+            elif [[ "$BASE" == "release" && "$HEAD" == release/* ]]; then
+              echo "ENV=STG" >> $GITHUB_OUTPUT
+            elif [[ "$BASE" == "usertest" && "$HEAD" == "release" ]]; then
+              echo "ENV=UT" >> $GITHUB_OUTPUT
+            elif [[ "$BASE" == "main" && "$HEAD" == "release" ]]; then
+              echo "ENV=PRO" >> $GITHUB_OUTPUT
+            else
+              echo "Unsupported PR flow. base=$BASE head=$HEAD" >&2
+              exit 1
+            fi
+
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+            # ✅ Tag deploy: mặc định PRO (phục vụ release/rollback bằng tag)
+            echo "ENV=PRO" >> $GITHUB_OUTPUT
+
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # ✅ Manual deploy: user chọn ENV
+            echo "ENV=${{ inputs.env }}" >> $GITHUB_OUTPUT
+
+          else
+            echo "Unsupported event: ${{ github.event_name }}" >&2
             exit 1
           fi
 
-          # Set output
-          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
-          echo "$CHANGELOG" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+      - name: Show target
+        run: echo "Deploy target environment: ${{ steps.env.outputs.ENV }}"
 
-      - name: Create GitHub Release Draft
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: ${{ github.event.inputs.version }}
-          body: ${{ env.CHANGELOG }}
-          draft: true
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Summary
+      - name: Resolve Azure credentials by environment
+        id: az
+        shell: bash
         run: |
-          echo "## 🚀 Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "Release draft created for version ${{ github.event.inputs.version }}." >> $GITHUB_STEP_SUMMARY
-          echo "Visit the [Releases section](https://github.com/vintasoftware/nextjs-fastapi-template/releases) to review and publish the release." >> $GITHUB_STEP_SUMMARY
-          echo "Once the draft is published, another action will automatically be triggered to publish the packages." >> $GITHUB_STEP_SUMMARY
+          ENV="${{ steps.env.outputs.ENV }}"
+          if [[ "$ENV" == "DEV" ]]; then
+            echo "CLIENT_ID=${{ secrets.AZURE_CLIENT_ID_DEV }}" >> $GITHUB_OUTPUT
+            echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}" >> $GITHUB_OUTPUT
+            echo "TENANT_ID=${{ secrets.AZURE_TENANT_ID_DEV }}" >> $GITHUB_OUTPUT
+            echo "APP_SERVICE=${{ secrets.AZURE_APP_SERVICE_NAME_DEV }}" >> $GITHUB_OUTPUT
+          elif [[ "$ENV" == "STG" ]]; then
+            echo "CLIENT_ID=${{ secrets.AZURE_CLIENT_ID_STG }}" >> $GITHUB_OUTPUT
+            echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_STG }}" >> $GITHUB_OUTPUT
+            echo "TENANT_ID=${{ secrets.AZURE_TENANT_ID_STG }}" >> $GITHUB_OUTPUT
+            echo "APP_SERVICE=${{ secrets.AZURE_APP_SERVICE_NAME_STG }}" >> $GITHUB_OUTPUT
+          elif [[ "$ENV" == "UT" ]]; then
+            echo "CLIENT_ID=${{ secrets.AZURE_CLIENT_ID_UT }}" >> $GITHUB_OUTPUT
+            echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_UT }}" >> $GITHUB_OUTPUT
+            echo "TENANT_ID=${{ secrets.AZURE_TENANT_ID_UT }}" >> $GITHUB_OUTPUT
+            echo "APP_SERVICE=${{ secrets.AZURE_APP_SERVICE_NAME_UT }}" >> $GITHUB_OUTPUT
+          elif [[ "$ENV" == "PRO" ]]; then
+            echo "CLIENT_ID=${{ secrets.AZURE_CLIENT_ID_PRO }}" >> $GITHUB_OUTPUT
+            echo "SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID_PRO }}" >> $GITHUB_OUTPUT
+            echo "TENANT_ID=${{ secrets.AZURE_TENANT_ID_PRO }}" >> $GITHUB_OUTPUT
+            echo "APP_SERVICE=${{ secrets.AZURE_APP_SERVICE_NAME_PRO }}" >> $GITHUB_OUTPUT
+          else
+            echo "Unsupported ENV for Azure login: $ENV" >&2
+            exit 1
+          fi
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ steps.az.outputs.CLIENT_ID }}
+          tenant-id: ${{ steps.az.outputs.TENANT_ID }}
+          subscription-id: ${{ steps.az.outputs.SUBSCRIPTION_ID }}
+
+      - name: Azure CLI script
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            APP="${{ steps.az.outputs.APP_SERVICE }}"
+            SLOT="deploy"
+            rg=$(az webapp list --query "[?name=='$APP'].resourceGroup" --output tsv)
+
+            az webapp config appsettings set -n "$APP" -g "$rg" --slot "$SLOT" --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false -o none
+            az webapp config set --startup-file="node server.js" -n "$APP" -g "$rg" --slot "$SLOT" -o none
+            sleep 10
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ steps.az.outputs.APP_SERVICE }}
+          slot-name: deploy
+          package: ${{ github.workspace }}/Nextjs-site.zip
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ${{ github.workspace }}/Nextjs-site.zip
