@@ -3,6 +3,11 @@ name: Build & Deploy Frontend
 on:
   workflow_dispatch:
     inputs:
+      env:
+        description: "Target environment (DEV/STG/UT/PRO)"
+        required: true
+        type: choice
+        options: [DEV, STG, UT, PRO]
       ref:
         description: "Git ref to deploy (tag/branch/commit). Example: v1.2.3"
         required: true
@@ -14,7 +19,7 @@ on:
     types: [closed]
     branches:
       - dev/v3.0.0
-      - release
+      - staging
       - usertest
       - main
   
@@ -101,31 +106,27 @@ jobs:
 
             if [[ "$BASE" == "dev/v3.0.0" && "$HEAD" == feature/* ]]; then
               echo "ENV=DEV" >> $GITHUB_OUTPUT
-            elif [[ "$BASE" == "release" && "$HEAD" == release/* ]]; then
+            elif [[ "$BASE" == "staging" && "$HEAD" == release/* ]]; then
               echo "ENV=STG" >> $GITHUB_OUTPUT
-            elif [[ "$BASE" == "usertest" && "$HEAD" == "release" ]]; then
+            elif [[ "$BASE" == "usertest" && "$HEAD" == "staging" ]]; then
               echo "ENV=UT" >> $GITHUB_OUTPUT
-            elif [[ "$BASE" == "main" && "$HEAD" == "release" ]]; then
+            elif [[ "$BASE" == "main" && "$HEAD" == "staging" ]]; then
               echo "ENV=PRO" >> $GITHUB_OUTPUT
             else
               echo "Unsupported PR flow. base=$BASE head=$HEAD" >&2
               exit 1
             fi
-
           elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
-            # ✅ Tag deploy: mặc định PRO (phục vụ release/rollback bằng tag)
             echo "ENV=PRO" >> $GITHUB_OUTPUT
-
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # ✅ Manual deploy: user chọn ENV
             echo "ENV=${{ inputs.env }}" >> $GITHUB_OUTPUT
-
           else
             echo "Unsupported event: ${{ github.event_name }}" >&2
             exit 1
           fi
 
       - name: Show target
+        shell: bash
         run: echo "Deploy target environment: ${{ steps.env.outputs.ENV }}"
 
       - name: Resolve Azure credentials by environment
