@@ -122,10 +122,6 @@ jobs:
             exit 1
           fi
 
-      - name: Show target
-        shell: bash
-        run: echo "Deploy target environment: ${{ steps.env.outputs.ENV }}"
-
       - name: Resolve Azure credentials by environment
         id: az
         shell: bash
