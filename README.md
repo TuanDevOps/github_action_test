@@ -52,7 +52,7 @@ This template features a carefully selected set of technologies to ensure effici
 - Vercel Deployment – Serverless backend and scalable frontend, deployable with minimal configuration.
 
 This is a partial list of the technologies included in the template. For a complete overview, visit our [Technology selection](https://vintasoftware.github.io/nextjs-fastapi-template/technology-selection/) page.
-
+abc
 ## Get Started
 
 To use this template, visit our [Get Started](https://vintasoftware.github.io/nextjs-fastapi-template/get-started/) and follow the steps.
